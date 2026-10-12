@@ -1,0 +1,17 @@
+# Verified working locally (Windows 10, Python 3.13, RTX 3060 Laptop GPU), 2026-10.
+#
+# Install PyTorch with CUDA first, from the PyTorch index (cu128 builds support
+# RTX 20xx and newer):
+#   pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
+# then:
+#   pip install -r requirements.txt && pip install -e .
+torch==2.11.0
+torchvision==0.26.0
+minatar==1.0.15
+
+# Analysis / plotting
+numpy==2.5.2
+pandas==3.0.6
+scipy==1.18.1
+matplotlib==3.11.2
+seaborn==0.13.2

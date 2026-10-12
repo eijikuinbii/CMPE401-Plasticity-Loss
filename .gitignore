@@ -1,0 +1,24 @@
+# Reference repos cloned beside this project — NOT part of our code
+reference/
+loss-of-plasticity/
+rl_with_resets/
+
+# Experiment outputs (raw runs stay local; curated results/figures are committed)
+runs/
+data/
+*.zip
+*.ckpt
+checkpoints/
+tensorboard/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
