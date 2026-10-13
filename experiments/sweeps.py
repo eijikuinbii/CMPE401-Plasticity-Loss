@@ -81,6 +81,32 @@ def overnight():
     return jobs
 
 
+# --- collapse pilot: which RL stressors actually cause plasticity loss? -------
+CYCLE_GAMES = "breakout,space_invaders,asterix"
+SWITCH = 200_000
+CYCLE = dict(game=CYCLE_GAMES, switch_every=SWITCH, steps=9 * SWITCH)  # 3 passes over 3 games
+SMALL = dict(conv_channels=4, hidden=32)  # 4x narrower than the reference network
+FRESH = dict(mitigation="reset", reset_layers=0, mit_every=SWITCH)
+
+
+def collapse_pilot():
+    """2 seeds per probe; compare against the 'fresh' references and the overnight
+    breakout_rr_1 / breakout_rr_4 runs."""
+    configs = {
+        # (label, flags, est. minutes), highest priority first
+        "cycle3_none": (dict(**CYCLE), 18),
+        "cycle3_fresh": (dict(**CYCLE, **FRESH), 18),
+        "cycle3_small_none": (dict(**CYCLE, **SMALL), 15),
+        "cycle3_small_fresh": (dict(**CYCLE, **SMALL, **FRESH), 15),
+        "breakout_rr_8": (dict(game="breakout", steps=1_000_000, replay_ratio=8), 45),
+        "breakout_rr_16": (dict(game="breakout", steps=500_000, replay_ratio=16), 45),
+        "cycle3_rr4_none": (dict(**CYCLE, replay_ratio=4), 55),
+    }
+    return [Job(run_id=f"{label}_s{seed}", group=label, script="dqn_minatar.py",
+                args=_flags(seed=seed, **flags), est_minutes=est)
+            for seed in (0, 1) for label, (flags, est) in configs.items()]
+
+
 def smoke():
     """~3 minute end-to-end check of every script and mitigation."""
     jobs = [Job(f"smoke_pmnist_{m}", f"smoke_pmnist_{m}", "permuted_mnist.py",
@@ -93,4 +119,4 @@ def smoke():
     return jobs
 
 
-SWEEPS = {"overnight": overnight, "smoke": smoke}
+SWEEPS = {"overnight": overnight, "collapse_pilot": collapse_pilot, "smoke": smoke}

@@ -22,16 +22,17 @@ def mlp(in_dim: int = 784, hidden: int = 256, depth: int = 3, out_dim: int = 10)
     return nn.Sequential(*layers)
 
 
-def minatar_qnet(in_channels: int, n_actions: int) -> nn.Sequential:
+def minatar_qnet(in_channels: int, n_actions: int, conv: int = 16, hidden: int = 128) -> nn.Sequential:
     """The reference MinAtar DQN architecture (Young & Tian, 2019).
 
     10x10xC grid -> conv(16, 3x3) -> ReLU -> fc(128) -> ReLU -> Q-values.
+    `conv` / `hidden` change the widths (defaults = the reference network).
     """
     return nn.Sequential(
-        nn.Conv2d(in_channels, 16, kernel_size=3, stride=1),
+        nn.Conv2d(in_channels, conv, kernel_size=3, stride=1),
         nn.ReLU(),
         nn.Flatten(),
-        nn.Linear(16 * 8 * 8, 128),
+        nn.Linear(conv * 8 * 8, hidden),
         nn.ReLU(),
-        nn.Linear(128, n_actions),
+        nn.Linear(hidden, n_actions),
     )

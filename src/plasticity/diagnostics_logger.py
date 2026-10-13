@@ -46,6 +46,7 @@ METRICS = (
     "plasticity_probe_loss", # loss when fitting fresh targets (lower = more plastic)
     "units_recycled",        # units reset by ReDo since last log
     "steps_per_sec",         # throughput, for compute-cost comparisons
+    "task_index",            # which task / game segment the step belongs to (RL task shifts)
 )
 
 

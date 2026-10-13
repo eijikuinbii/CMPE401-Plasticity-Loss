@@ -2,12 +2,16 @@
 DQN on MinAtar with a configurable replay ratio, optional periodic task shifts,
 plasticity diagnostics, and plug-in mitigations.
 
-Two ways to induce plasticity loss:
+Three ways to induce plasticity loss:
   --replay-ratio R   gradient updates per environment step (MinAtar's reference
                      DQN uses 1). High R overfits early data -- the "primacy bias".
   --shift-every N    every N env steps, re-permute the observation channels, so
                      the agent must re-learn what each object channel means
                      (the RL analogue of permuted MNIST).
+  --game a,b,c       cycle through several MinAtar games, switching every
+     --switch-every N  N env steps (continual multi-game RL, cf. Abbas et al.,
+                     2023). Observations are zero-padded to the largest channel
+                     count; all games share the same 6 actions.
 
 Architecture and defaults follow the MinAtar reference DQN (Young & Tian, 2019),
 with Adam in place of RMSprop.
@@ -37,16 +41,22 @@ from plasticity.graphs import cuda_graph
 from plasticity.networks import minatar_qnet
 
 
+GAMES = ("breakout", "space_invaders", "asterix", "freeway", "seaquest")
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--game", default="breakout",
-                   choices=["breakout", "space_invaders", "asterix", "freeway", "seaquest"])
+                   help=f"one of {GAMES}, or a comma-separated list to cycle through")
+    p.add_argument("--switch-every", type=int, default=0, help="env steps per game when cycling games")
     p.add_argument("--mitigation", default="none", choices=M.MITIGATIONS)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--steps", type=int, default=1_000_000, help="environment steps")
     p.add_argument("--replay-ratio", type=float, default=1.0, help="updates per env step")
     p.add_argument("--shift-every", type=int, default=0, help="env steps between channel permutations (0 = off)")
     # DQN
+    p.add_argument("--conv-channels", type=int, default=16)
+    p.add_argument("--hidden", type=int, default=128)
     p.add_argument("--batch", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--gamma", type=float, default=0.99)
@@ -71,7 +81,13 @@ def parse_args(argv=None):
     p.add_argument("--group", default=None)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--no-cuda-graph", action="store_true")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    args.games = args.game.split(",")
+    if any(g not in GAMES for g in args.games):
+        p.error(f"--game must be from {GAMES}")
+    if len(args.games) > 1 and not args.switch_every:
+        p.error("cycling several games needs --switch-every")
+    return args
 
 
 class Replay:
@@ -128,8 +144,11 @@ class Replay:
 
 
 def to_obs(state: np.ndarray, perm: np.ndarray) -> np.ndarray:
-    """MinAtar (10, 10, C) bool grid -> (C, 10, 10) uint8, channels permuted."""
-    return np.ascontiguousarray(state[:, :, perm].transpose(2, 0, 1), dtype=np.uint8)
+    """MinAtar (10, 10, c) bool grid -> (C, 10, 10) uint8: zero-padded to C = len(perm)
+    channels, then channels permuted."""
+    obs = np.zeros((len(perm), 10, 10), dtype=np.uint8)
+    obs[:state.shape[2]] = state.transpose(2, 0, 1)
+    return obs[perm]
 
 
 def evaluate(greedy, game, seed, perm, episodes, eps=0.01, max_steps=20_000) -> float:
@@ -161,18 +180,24 @@ def main(argv=None):
     rng = np.random.default_rng(args.seed)
     shift_rng = np.random.default_rng(10_000 + args.seed)
 
-    env = Environment(args.game)
-    env.seed(args.seed)
-    n_ch, n_actions = env.state_shape()[2], env.num_actions()
+    envs = []
+    for i, g in enumerate(args.games):
+        e = Environment(g)
+        e.seed(args.seed + 1000 * i)
+        envs.append(e)
+    n_ch = max(e.state_shape()[2] for e in envs)
+    n_actions = envs[0].num_actions()
+    assert all(e.num_actions() == n_actions for e in envs)
+    task, env = 0, envs[0]
     perm = np.arange(n_ch)
 
-    qnet = minatar_qnet(n_ch, n_actions).to(device)
+    qnet = minatar_qnet(n_ch, n_actions, args.conv_channels, args.hidden).to(device)
     target = copy.deepcopy(qnet)
     wd = args.weight_decay if args.mitigation == "l2" else 0.0
     opt = torch.optim.Adam(qnet.parameters(), lr=args.lr, weight_decay=wd, capturable=use_graph)
     buf = Replay(args.buffer, (n_ch, 10, 10), device)
 
-    logger = RunLogger(args.out, env=f"MinAtar-{args.game}", algo="DQN", mitigation=args.mitigation,
+    logger = RunLogger(args.out, env=f"MinAtar-{'+'.join(args.games)}", algo="DQN", mitigation=args.mitigation,
                        seed=args.seed, config=vars(args), run_id=args.run_id, group=args.group)
     print(f"[{logger.run_id}] device={device} cuda_graph={use_graph}", flush=True)
 
@@ -244,20 +269,6 @@ def main(argv=None):
                 if n_updates % 100 == 0:
                     grad_norms.append(D.grad_norm(qnet))
 
-        # --- task shift: new random meaning for each observation channel ---
-        if args.shift_every and step % args.shift_every == 0:
-            perm = shift_rng.permutation(n_ch)
-            obs = to_obs(env.state(), perm)
-
-        # --- mitigation ---
-        if step > args.learn_start and step % args.mit_every == 0:
-            if args.mitigation == "reset":
-                M.reset_layers(qnet, args.reset_layers, opt)
-            elif args.mitigation == "shrink_perturb":
-                M.shrink_perturb(qnet, args.sp_alpha)
-            elif args.mitigation == "redo":
-                units_recycled += M.redo(qnet, buf.recent_states(1024, rng), args.tau, opt)
-
         # --- log ---
         if step % args.log_every == 0 and step > args.learn_start:
             now = time.time()
@@ -275,7 +286,10 @@ def main(argv=None):
             if step % args.probe_every == 0:
                 metrics["plasticity_probe_loss"] = D.plasticity_probe(qnet, buf.recent_states(512, rng))
             if step % args.eval_every == 0:
-                metrics["eval_reward"] = evaluate(greedy, args.game, 100_000 + step, perm, args.eval_episodes)
+                metrics["eval_reward"] = evaluate(greedy, args.games[task % len(envs)], 100_000 + step, perm,
+                                                  args.eval_episodes)
+            if args.switch_every or args.shift_every:
+                metrics["task_index"] = task if args.switch_every else (step - 1) // args.shift_every
             logger.log_dict(step, metrics)
             print(f"step {step:>9,}  return {metrics.get('train_return', float('nan')):7.2f}  "
                   f"dormant {metrics['dormant_fraction']:.3f}  erank {metrics['effective_rank']:6.1f}  "
@@ -283,6 +297,31 @@ def main(argv=None):
             episode_returns, grad_norms, units_recycled = [], [], 0
             loss_acc.zero_()
             n_updates_window, t_window = 0, time.time()
+
+        # Boundary events come after logging, so a logged window (and its eval)
+        # belongs entirely to the task it trained on.
+
+        # --- game switch: the in-progress episode is abandoned, not recorded ---
+        if args.switch_every and step % args.switch_every == 0:
+            task += 1
+            env = envs[task % len(envs)]
+            env.reset()
+            ep_ret = 0.0
+            obs = to_obs(env.state(), perm)
+
+        # --- task shift: new random meaning for each observation channel ---
+        if args.shift_every and step % args.shift_every == 0:
+            perm = shift_rng.permutation(n_ch)
+            obs = to_obs(env.state(), perm)
+
+        # --- mitigation ---
+        if step > args.learn_start and step % args.mit_every == 0:
+            if args.mitigation == "reset":
+                M.reset_layers(qnet, args.reset_layers, opt)
+            elif args.mitigation == "shrink_perturb":
+                M.shrink_perturb(qnet, args.sp_alpha)
+            elif args.mitigation == "redo":
+                units_recycled += M.redo(qnet, buf.recent_states(1024, rng), args.tau, opt)
 
     torch.save(qnet.state_dict(), logger.dir / "model.pt")
     logger.close(updates=n_updates)
