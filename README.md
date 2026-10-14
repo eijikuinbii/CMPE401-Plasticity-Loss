@@ -70,8 +70,11 @@ python experiments/run_sweep.py overnight --status       # progress, from any te
 ```
 
 - Re-running the same command **resumes**: finished runs are skipped, interrupted ones restart.
-- A failing job is retried once, then skipped; the sweep carries on. Each job's output is in `runs/<run_id>/stdout.log`, the sweep's timeline in `runs/_sweeps/<sweep>.log`.
+- A failing job is retried twice, then skipped; the sweep carries on. Each job's output is in `runs/<run_id>/stdout.log`, the sweep's timeline in `runs/_sweeps/<sweep>.log`.
 - `--stop-after H` stops launching new jobs after H hours.
+- **On Windows, run long sweeps without a console window** — closing the window kills the sweep (this cost us a run). From PowerShell:
+  `Start-Process <venv>\Scripts\python.exe -ArgumentList "experiments\run_sweep.py","<sweep>" -WindowStyle Hidden`.
+  Check on it with `--status` or `runs/_sweeps/<sweep>.log`. To stop it gracefully, create an empty file `runs/_sweeps/<sweep>.STOP`: the running job finishes, nothing new starts.
 - One job at a time (the default) is fastest on a single laptop GPU: with CUDA graphs one DQN job saturates the GPU (~2,150 env steps/s at replay ratio 1), and two concurrent jobs are slower in total. `--workers N` exists for bigger GPUs.
 - **Don't kill individual training processes (e.g. from Task Manager) while others are using the GPU.** On Windows we observed that force-killing one CUDA process can crash other running CUDA processes. Stop the whole sweep with Ctrl+C instead; re-running resumes it.
 

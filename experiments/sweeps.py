@@ -107,6 +107,39 @@ def collapse_pilot():
             for seed in (0, 1) for label, (flags, est) in configs.items()]
 
 
+# --- k-sweep: does learning ability degrade with the AMOUNT of prior training? --
+# Target: learn Asterix for one 200k segment. Before it: k segments alternating
+# Breakout / Space Invaders, always ending on Space Invaders (so the game right
+# before Asterix is the same for every k > 0). Asterix never appears among the
+# priors, so revisit memory can't help. k = 0 is the fresh-network reference.
+# Plasticity loss predicts Asterix learning gets steadily worse as k grows;
+# one-off negative transfer predicts a drop at k = 1 that then flattens.
+K_PRIORS = ["breakout", "space_invaders"] * 4
+
+
+def k_schedule(k: int) -> dict:
+    games = K_PRIORS[len(K_PRIORS) - k:] + ["asterix"] if k else ["asterix"]
+    flags = dict(game=",".join(games), steps=(k + 1) * SWITCH, obs_channels=6)  # 6 = Space Invaders
+    if k:
+        flags["switch_every"] = SWITCH
+    return flags
+
+
+def k_sweep():
+    seg_min = {1: 1.5, 4: 5.6}  # measured minutes per 200k segment at replay ratio 1 / 4
+    arms = [  # (label, replay ratio, ks, extra flags), highest priority first
+        ("rr1_none", 1, (0, 1, 2, 4, 8), {}),
+        ("rr1_l2", 1, (8,), dict(mitigation="l2")),
+        ("rr1_shrink_perturb", 1, (8,), dict(mitigation="shrink_perturb", mit_every=50_000)),
+        ("rr1_redo", 1, (8,), dict(mitigation="redo", mit_every=25_000)),
+        ("rr4_none", 4, (0, 2, 8), {}),
+    ]
+    return [Job(run_id=f"kprior_{label}_k{k}_s{seed}", group=f"kprior_{label}_k{k}", script="dqn_minatar.py",
+                args=_flags(seed=seed, replay_ratio=rr, **k_schedule(k), **extra),
+                est_minutes=(k + 1) * seg_min[rr])
+            for label, rr, ks, extra in arms for seed in SEEDS for k in ks]
+
+
 def smoke():
     """~3 minute end-to-end check of every script and mitigation."""
     jobs = [Job(f"smoke_pmnist_{m}", f"smoke_pmnist_{m}", "permuted_mnist.py",
@@ -119,4 +152,4 @@ def smoke():
     return jobs
 
 
-SWEEPS = {"overnight": overnight, "collapse_pilot": collapse_pilot, "smoke": smoke}
+SWEEPS = {"overnight": overnight, "collapse_pilot": collapse_pilot, "k_sweep": k_sweep, "smoke": smoke}

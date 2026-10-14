@@ -55,6 +55,9 @@ def parse_args(argv=None):
     p.add_argument("--replay-ratio", type=float, default=1.0, help="updates per env step")
     p.add_argument("--shift-every", type=int, default=0, help="env steps between channel permutations (0 = off)")
     # DQN
+    p.add_argument("--obs-channels", type=int, default=0,
+                   help="zero-pad observations to at least this many channels (so runs on different "
+                        "game lists get identical networks)")
     p.add_argument("--conv-channels", type=int, default=16)
     p.add_argument("--hidden", type=int, default=128)
     p.add_argument("--batch", type=int, default=32)
@@ -185,7 +188,7 @@ def main(argv=None):
         e = Environment(g)
         e.seed(args.seed + 1000 * i)
         envs.append(e)
-    n_ch = max(e.state_shape()[2] for e in envs)
+    n_ch = max([args.obs_channels] + [e.state_shape()[2] for e in envs])
     n_actions = envs[0].num_actions()
     assert all(e.num_actions() == n_actions for e in envs)
     task, env = 0, envs[0]

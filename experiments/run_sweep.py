@@ -11,6 +11,10 @@ Run a named sweep of training jobs (defined in sweeps.py) unattended.
   carries on.
 - While running, Windows is asked not to sleep (the display may still turn off).
 - Progress is appended to runs/_sweeps/<sweep>.log.
+- Graceful stop: create runs/_sweeps/<sweep>.STOP (any content). The sweep lets
+  the running job finish, starts nothing new, and removes the file. Useful when
+  the sweep runs without a console window (no Ctrl+C), e.g. started with
+  PowerShell's `Start-Process ... -WindowStyle Hidden`.
 
     python experiments/run_sweep.py overnight --dry-run      # list jobs + estimates
     python experiments/run_sweep.py overnight                # run it
@@ -99,6 +103,8 @@ def main(argv=None):
         return
 
     log = SweepLog(root, args.sweep)
+    stop_file = root / "_sweeps" / f"{args.sweep}.STOP"
+    stop_file.unlink(missing_ok=True)  # a stale request from an earlier session
     log(f"sweep '{args.sweep}': {len(todo)}/{len(jobs)} jobs to run, {args.workers} workers, root={root}")
     deadline = datetime.now() + timedelta(hours=args.stop_after) if args.stop_after else None
     queue = list(todo)
@@ -113,6 +119,9 @@ def main(argv=None):
                 attempts[job.run_id] += 1
                 running[job.run_id] = (job, launch(job, root), time.time())
                 log(f"start  {job.run_id}  (attempt {attempts[job.run_id]})")
+            if stop_file.exists() and queue:
+                log(f"STOP file found; finishing running jobs, not starting {len(queue)} remaining")
+                queue.clear()
             if deadline and datetime.now() > deadline and queue:
                 log(f"--stop-after reached; not starting {len(queue)} remaining jobs")
                 queue.clear()
@@ -137,6 +146,7 @@ def main(argv=None):
             proc.terminate()
     finally:
         keep_awake(False)
+        stop_file.unlink(missing_ok=True)
     log(f"sweep '{args.sweep}' finished; {len(failed)} failed: {failed}")
 
 
